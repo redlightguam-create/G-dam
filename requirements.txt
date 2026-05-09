@@ -1,0 +1,11 @@
+# Core dependencies
+pydrive2==1.19.0
+google-api-python-client>=2.0.0
+PyInstaller>=6.15.0
+Pillow>=12.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.20
+
+# Optional: for drag-and-drop functionality (may not work on all Python versions)
+# tkinterdnd2==0.3.0

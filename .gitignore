@@ -1,0 +1,11 @@
+token.pickle
+google_drive_token.pickle
+*.pickle
+*.log
+settings.json
+build/
+dist/
+__pycache__/
+.venv/
+frontend/node_modules/
+frontend/dist/
