@@ -4,6 +4,7 @@ from typing import Optional
 
 from starlette.background import BackgroundTask
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -40,6 +41,21 @@ from services.status_service import calculate_song_release_status
 
 
 app = FastAPI(title="Music Distribution Organizer API")
+
+DEFAULT_CORS_ORIGINS = "http://127.0.0.1:5173,http://localhost:5173"
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 FRONTEND_DIST_DIR = os.path.join("frontend", "dist")
 FRONTEND_DIST_ASSETS_DIR = os.path.join(FRONTEND_DIST_DIR, "assets")

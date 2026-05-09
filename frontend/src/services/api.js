@@ -1,5 +1,7 @@
+import { apiUrl } from '../config';
+
 async function requestJson(path, options = {}) {
-  const response = await fetch(path, options);
+  const response = await fetch(apiUrl(path), options);
   const data = await response.json().catch(() => ({
     ok: false,
     detail: response.statusText

@@ -162,6 +162,24 @@ cd frontend
 npm install
 ```
 
+Optional local frontend environment file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+The frontend reads `VITE_API_BASE_URL` from `frontend/.env`. If no value is set, local development uses:
+
+```text
+http://127.0.0.1:8000
+```
+
+Production builds default to:
+
+```text
+https://g-dam.onrender.com
+```
+
 After `npm install` finishes, launch the dashboard with:
 
 ```powershell
