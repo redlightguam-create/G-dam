@@ -1,7 +1,8 @@
 import { apiUrl } from '../config';
 
 async function requestJson(path, options = {}) {
-  const response = await fetch(apiUrl(path), options);
+  const url = apiUrl(path);
+  const response = await fetch(url, options);
   const data = await response.json().catch(() => ({
     ok: false,
     detail: response.statusText
@@ -9,7 +10,8 @@ async function requestJson(path, options = {}) {
 
   if (!response.ok) {
     const message = data.detail || `Request failed: ${response.status}`;
-    throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
+    const detail = typeof message === 'string' ? message : JSON.stringify(message);
+    throw new Error(`${detail} (${url})`);
   }
 
   return data;
