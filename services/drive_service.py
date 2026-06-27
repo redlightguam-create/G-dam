@@ -80,7 +80,6 @@ def decode_base64_env(value):
 
 
 def ensure_hosted_google_auth_files():
-    app_data_dir = get_app_data_dir()
     write_env_file_if_present(
         'GOOGLE_CLIENT_SECRETS_JSON',
         os.path.join(os.path.abspath('.'), 'client_secrets.json'),
@@ -88,11 +87,6 @@ def ensure_hosted_google_auth_files():
     write_env_file_if_present(
         'GOOGLE_CLIENT_SECRETS_BASE64',
         os.path.join(os.path.abspath('.'), 'client_secrets.json'),
-        decode_base64_env,
-    )
-    write_env_file_if_present(
-        'GOOGLE_DRIVE_TOKEN_BASE64',
-        os.path.join(app_data_dir, TOKEN_FILENAME),
         decode_base64_env,
     )
 
@@ -141,8 +135,8 @@ def get_authenticated_drive(force_new_token=False, credentials=None, on_credenti
     if gauth.credentials is None:
         if is_hosted:
             raise RuntimeError(
-                'Hosted Google auth is not configured. Set GOOGLE_DRIVE_TOKEN_BASE64 and '
-                'GOOGLE_CLIENT_SECRETS_BASE64 or GOOGLE_CLIENT_SECRETS_JSON in the backend host.'
+                'Hosted Google auth is not configured. Sign in through /auth/google/start '
+                'or set GOOGLE_CLIENT_SECRETS_BASE64 in the backend host.'
             )
         gauth.LocalWebserverAuth()
         should_save_credentials = True
