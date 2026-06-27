@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -38,10 +39,12 @@ def get_app_data_dir():
 
 
 def get_token_path():
+    ensure_hosted_google_auth_files()
     return os.path.join(get_app_data_dir(), TOKEN_FILENAME)
 
 
 def get_client_secrets_path():
+    ensure_hosted_google_auth_files()
     if getattr(sys, 'frozen', False):
         candidates = [
             os.path.join(os.path.dirname(sys.executable), 'client_secrets.json'),
@@ -57,6 +60,41 @@ def get_client_secrets_path():
         if os.path.exists(path):
             return path
     return candidates[0]
+
+
+def write_env_file_if_present(env_name, destination_path, decoder=None):
+    value = os.environ.get(env_name)
+    if not value:
+        return
+
+    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+    content = decoder(value.strip()) if decoder else value
+    mode = 'wb' if isinstance(content, bytes) else 'w'
+    kwargs = {} if 'b' in mode else {'encoding': 'utf-8'}
+    with open(destination_path, mode, **kwargs) as file:
+        file.write(content)
+
+
+def decode_base64_env(value):
+    return base64.b64decode(value.encode('utf-8'))
+
+
+def ensure_hosted_google_auth_files():
+    app_data_dir = get_app_data_dir()
+    write_env_file_if_present(
+        'GOOGLE_CLIENT_SECRETS_JSON',
+        os.path.join(os.path.abspath('.'), 'client_secrets.json'),
+    )
+    write_env_file_if_present(
+        'GOOGLE_CLIENT_SECRETS_BASE64',
+        os.path.join(os.path.abspath('.'), 'client_secrets.json'),
+        decode_base64_env,
+    )
+    write_env_file_if_present(
+        'GOOGLE_DRIVE_TOKEN_BASE64',
+        os.path.join(app_data_dir, TOKEN_FILENAME),
+        decode_base64_env,
+    )
 
 
 def build_google_auth_settings(client_secrets_path=None, token_path=None):
@@ -75,10 +113,24 @@ def build_google_auth_settings(client_secrets_path=None, token_path=None):
     }
 
 
-def get_authenticated_drive(force_new_token=False):
+def get_authenticated_drive(force_new_token=False, credentials=None, on_credentials_updated=None):
+    if credentials is not None:
+        gauth = GoogleAuth(settings=build_google_auth_settings())
+        gauth.credentials = credentials
+        should_save_credentials = False
+        if gauth.access_token_expired:
+            gauth.Refresh()
+            should_save_credentials = True
+        else:
+            gauth.Authorize()
+        if should_save_credentials and on_credentials_updated:
+            on_credentials_updated(gauth.credentials)
+        return GoogleDrive(gauth)
+
     token_path = get_token_path()
     gauth = GoogleAuth(settings=build_google_auth_settings(token_path=token_path))
     should_save_credentials = False
+    is_hosted = os.environ.get('GDAM_HOSTED') == '1' or os.environ.get('RENDER')
 
     if force_new_token and os.path.exists(token_path):
         os.remove(token_path)
@@ -87,6 +139,11 @@ def get_authenticated_drive(force_new_token=False):
         gauth.LoadCredentialsFile(token_path)
 
     if gauth.credentials is None:
+        if is_hosted:
+            raise RuntimeError(
+                'Hosted Google auth is not configured. Set GOOGLE_DRIVE_TOKEN_BASE64 and '
+                'GOOGLE_CLIENT_SECRETS_BASE64 or GOOGLE_CLIENT_SECRETS_JSON in the backend host.'
+            )
         gauth.LocalWebserverAuth()
         should_save_credentials = True
     elif gauth.access_token_expired:

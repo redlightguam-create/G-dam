@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: g-dam-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: GDAM_HOSTED
+        value: "1"
+      - key: REQUIRE_LOGIN
+        value: "1"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: TOKEN_ENCRYPTION_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GOOGLE_CLIENT_SECRETS_BASE64
+        sync: false

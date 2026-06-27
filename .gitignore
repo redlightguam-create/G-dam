@@ -12,3 +12,6 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local
+hosted-secrets.txt
+client_secrets.json
+.app_data/

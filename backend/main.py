@@ -3,9 +3,9 @@ import tempfile
 from typing import Optional
 
 from starlette.background import BackgroundTask
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -38,9 +38,28 @@ from services.split_sheet_service import (
     send_split_sheet_for_song,
 )
 from services.status_service import calculate_song_release_status
+from services.auth_service import (
+    SESSION_COOKIE_NAME,
+    build_google_login_url,
+    create_session,
+    delete_session,
+    exchange_google_code,
+    get_cookie_secure,
+    get_cookie_samesite,
+    get_drive_for_user,
+    get_drive_for_signature_token,
+    get_frontend_url,
+    get_session_user,
+    init_auth_db,
+    require_login,
+    save_user_from_credentials,
+    save_signature_token_owner,
+)
+from services.drive_service import get_authenticated_drive
 
 
 app = FastAPI(title="Music Distribution Organizer API")
+init_auth_db()
 
 DEFAULT_CORS_ORIGINS = "http://127.0.0.1:5173,http://localhost:5173"
 CORS_ORIGINS = [
@@ -66,6 +85,91 @@ if os.path.isdir(FRONTEND_DIST_ASSETS_DIR):
 
 if os.path.isdir(FRONTEND_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=FRONTEND_STATIC_DIR), name="static")
+
+
+def public_user(user):
+    if not user:
+        return None
+    return {
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "name": user.get("name", ""),
+        "picture": user.get("picture", ""),
+    }
+
+
+def get_current_user(request: Request):
+    return get_session_user(request.cookies.get(SESSION_COOKIE_NAME))
+
+
+def get_request_drive(request: Request):
+    user = get_current_user(request)
+    if user:
+        return get_drive_for_user(user["id"])
+    if require_login():
+        raise HTTPException(status_code=401, detail="Sign in with Google to continue.")
+    return get_authenticated_drive()
+
+
+@app.get("/auth/status")
+def auth_status(request: Request):
+    user = get_current_user(request)
+    return {
+        "ok": True,
+        "require_login": require_login(),
+        "authenticated": bool(user),
+        "user": public_user(user),
+    }
+
+
+@app.get("/auth/google/start")
+def start_google_auth(request: Request):
+    state = os.urandom(16).hex()
+    response = RedirectResponse(build_google_login_url(request, state))
+    response.set_cookie(
+        "gdam_oauth_state",
+        state,
+        httponly=True,
+        secure=get_cookie_secure(),
+        samesite=get_cookie_samesite(),
+        max_age=600,
+    )
+    return response
+
+
+@app.get("/auth/google/callback")
+def google_auth_callback(request: Request, response: Response, code: str = "", state: str = ""):
+    expected_state = request.cookies.get("gdam_oauth_state", "")
+    if not code or not state or state != expected_state:
+        raise HTTPException(status_code=400, detail="Google login state did not match. Try signing in again.")
+    try:
+        credentials = exchange_google_code(request, code)
+        user = save_user_from_credentials(credentials)
+        session_id = create_session(user["id"])
+        redirect = RedirectResponse(get_frontend_url())
+        redirect.set_cookie(
+            SESSION_COOKIE_NAME,
+            session_id,
+            httponly=True,
+            secure=get_cookie_secure(),
+            samesite=get_cookie_samesite(),
+            max_age=60 * 60 * 24 * 14,
+        )
+        redirect.delete_cookie("gdam_oauth_state")
+        return redirect
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    delete_session(request.cookies.get(SESSION_COOKIE_NAME))
+    return_response = Response(
+        content='{"ok": true}',
+        media_type="application/json",
+    )
+    return_response.delete_cookie(SESSION_COOKIE_NAME)
+    return return_response
 
 
 @app.get("/")
@@ -445,9 +549,9 @@ class ArtistProfileRequest(BaseModel):
 
 
 @app.post("/create-artist")
-def create_artist(request: CreateArtistRequest):
+def create_artist(request: CreateArtistRequest, drive=Depends(get_request_drive)):
     try:
-        result = create_artist_folder(request.artist_name)
+        result = create_artist_folder(request.artist_name, drive=drive)
         return {
             "ok": True,
             "artist": result["artist"],
@@ -462,9 +566,9 @@ def create_artist(request: CreateArtistRequest):
 
 
 @app.post("/create-song")
-def create_song(request: CreateSongRequest):
+def create_song(request: CreateSongRequest, drive=Depends(get_request_drive)):
     try:
-        result = create_song_folder(request.artist_name, request.song_name)
+        result = create_song_folder(request.artist_name, request.song_name, drive=drive)
         return {
             "ok": True,
             "artist": result["artist"],
@@ -485,6 +589,7 @@ async def upload(
     file: UploadFile = File(...),
     artist_name: Optional[str] = Form(None),
     song_name: Optional[str] = Form(None),
+    drive=Depends(get_request_drive),
 ):
     temp_path = None
     try:
@@ -498,6 +603,7 @@ async def upload(
             filename=file.filename,
             artist_name=artist_name,
             song_name=song_name,
+            drive=drive,
         )
         return {
             "ok": True,
@@ -516,20 +622,20 @@ async def upload(
 
 
 @app.get("/collaborators")
-def get_collaborators():
+def get_collaborators(drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "collaborators": load_collaborators(),
+            "collaborators": load_collaborators(drive=drive),
         }
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
 
 @app.post("/collaborators")
-def create_or_update_collaborator(request: CollaboratorRequest):
+def create_or_update_collaborator(request: CollaboratorRequest, drive=Depends(get_request_drive)):
     try:
-        result = save_collaborator_profile(request.model_dump())
+        result = save_collaborator_profile(request.model_dump(), drive=drive)
         return {
             "ok": True,
             "created": result["created"],
@@ -542,33 +648,33 @@ def create_or_update_collaborator(request: CollaboratorRequest):
 
 
 @app.get("/songs")
-def get_songs():
+def get_songs(drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "songs": list_songs(),
+            "songs": list_songs(drive=drive),
         }
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
 
 @app.get("/artist-profiles")
-def get_artist_profiles():
+def get_artist_profiles(drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "artist_profiles": list_artist_profiles(),
+            "artist_profiles": list_artist_profiles(drive=drive),
         }
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
 
 @app.patch("/artist-profiles/{artist_folder_id}")
-def patch_artist_profile(artist_folder_id: str, request: ArtistProfileRequest):
+def patch_artist_profile(artist_folder_id: str, request: ArtistProfileRequest, drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "artist_profile": rename_artist_profile(artist_folder_id, request.artist_name),
+            "artist_profile": rename_artist_profile(artist_folder_id, request.artist_name, drive=drive),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -577,11 +683,11 @@ def patch_artist_profile(artist_folder_id: str, request: ArtistProfileRequest):
 
 
 @app.delete("/artist-profiles/{artist_folder_id}")
-def delete_artist_profile_endpoint(artist_folder_id: str):
+def delete_artist_profile_endpoint(artist_folder_id: str, drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "artist_profile": delete_artist_profile(artist_folder_id),
+            "artist_profile": delete_artist_profile(artist_folder_id, drive=drive),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -590,7 +696,7 @@ def delete_artist_profile_endpoint(artist_folder_id: str):
 
 
 @app.post("/artist-profiles/{artist_folder_id}/image")
-async def post_artist_profile_image(artist_folder_id: str, image: UploadFile = File(...)):
+async def post_artist_profile_image(artist_folder_id: str, image: UploadFile = File(...), drive=Depends(get_request_drive)):
     if not (image.content_type or '').startswith('image/'):
         raise HTTPException(status_code=400, detail="Upload an image file.")
 
@@ -602,7 +708,7 @@ async def post_artist_profile_image(artist_folder_id: str, image: UploadFile = F
             temp.write(await image.read())
         return {
             "ok": True,
-            "image": upload_artist_profile_image(artist_folder_id, temp_path, filename=image.filename),
+            "image": upload_artist_profile_image(artist_folder_id, temp_path, filename=image.filename, drive=drive),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -614,9 +720,9 @@ async def post_artist_profile_image(artist_folder_id: str, image: UploadFile = F
 
 
 @app.get("/artist-profiles/{artist_folder_id}/image")
-def get_artist_profile_image(artist_folder_id: str):
+def get_artist_profile_image(artist_folder_id: str, drive=Depends(get_request_drive)):
     try:
-        image_file = get_artist_profile_image_file(artist_folder_id)
+        image_file = get_artist_profile_image_file(artist_folder_id, drive=drive)
         if not image_file:
             raise HTTPException(status_code=404, detail="No profile image found.")
 
@@ -639,14 +745,14 @@ def get_artist_profile_image(artist_folder_id: str):
 
 
 @app.get("/song-credits/{song_folder_id}")
-def get_song_credits(song_folder_id: str, artist: str = "", song: str = ""):
+def get_song_credits(song_folder_id: str, artist: str = "", song: str = "", drive=Depends(get_request_drive)):
     try:
-        record = get_song_credit_record(song_folder_id, artist=artist, song=song)
+        record = get_song_credit_record(song_folder_id, artist=artist, song=song, drive=drive)
         return {
             "ok": True,
             "song_credit": record,
             "split_total": sum(float(item.get("split") or 0) for item in record.get("collaborators", [])),
-            "release_status": calculate_song_release_status(song_folder_id, record=record),
+            "release_status": calculate_song_release_status(song_folder_id, drive=drive, record=record),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -655,11 +761,11 @@ def get_song_credits(song_folder_id: str, artist: str = "", song: str = ""):
 
 
 @app.get("/songs/{song_folder_id}/completeness")
-def get_song_completeness_endpoint(song_folder_id: str):
+def get_song_completeness_endpoint(song_folder_id: str, drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "completeness": get_song_completeness(song_folder_id),
+            "completeness": get_song_completeness(song_folder_id, drive=drive),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -668,12 +774,12 @@ def get_song_completeness_endpoint(song_folder_id: str):
 
 
 @app.patch("/songs/{song_folder_id}/status")
-def patch_song_status(song_folder_id: str, request: SongStatusRequest):
+def patch_song_status(song_folder_id: str, request: SongStatusRequest, drive=Depends(get_request_drive)):
     try:
-        release_status = calculate_song_release_status(song_folder_id)
+        release_status = calculate_song_release_status(song_folder_id, drive=drive)
         return {
             "ok": True,
-            "song_credit": update_song_status(song_folder_id, release_status["label"]),
+            "song_credit": update_song_status(song_folder_id, release_status["label"], drive=drive),
             "release_status": release_status,
         }
     except ValueError as error:
@@ -683,11 +789,11 @@ def patch_song_status(song_folder_id: str, request: SongStatusRequest):
 
 
 @app.post("/songs/{song_folder_id}/generate-split-sheet")
-def generate_song_split_sheet(song_folder_id: str):
+def generate_song_split_sheet(song_folder_id: str, drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "split_sheet": generate_split_sheet_for_song(song_folder_id),
+            "split_sheet": generate_split_sheet_for_song(song_folder_id, drive=drive),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -696,11 +802,15 @@ def generate_song_split_sheet(song_folder_id: str):
 
 
 @app.post("/songs/{song_folder_id}/send-split-sheet")
-def send_song_split_sheet(song_folder_id: str, request: Request):
+def send_song_split_sheet(song_folder_id: str, request: Request, drive=Depends(get_request_drive)):
     try:
+        user = get_current_user(request)
         return {
             "ok": True,
-            "result": send_split_sheet_for_song(song_folder_id, str(request.base_url)),
+            "result": register_signature_owners(
+                send_split_sheet_for_song(song_folder_id, str(request.base_url), drive=drive),
+                user,
+            ),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -708,8 +818,15 @@ def send_song_split_sheet(song_folder_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(error))
 
 
+def register_signature_owners(result, user):
+    if user:
+        for signature_request in result.get("created_requests", []):
+            save_signature_token_owner(signature_request.get("token"), user["id"])
+    return result
+
+
 @app.post("/song-credits/{song_folder_id}/collaborators")
-def add_song_credit(song_folder_id: str, request: SongCreditCollaboratorRequest):
+def add_song_credit(song_folder_id: str, request: SongCreditCollaboratorRequest, drive=Depends(get_request_drive)):
     try:
         result = add_song_credit_collaborator(
             song_folder_id,
@@ -719,12 +836,13 @@ def add_song_credit(song_folder_id: str, request: SongCreditCollaboratorRequest)
             credit=request.credit,
             artist=request.artist,
             song=request.song,
+            drive=drive,
         )
         return {
             "ok": True,
             "song_credit": result["record"],
             "split_total": result["split_total"],
-            "release_status": calculate_song_release_status(song_folder_id, record=result["record"]),
+            "release_status": calculate_song_release_status(song_folder_id, drive=drive, record=result["record"]),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -733,15 +851,15 @@ def add_song_credit(song_folder_id: str, request: SongCreditCollaboratorRequest)
 
 
 @app.delete("/song-credits/{song_folder_id}/collaborators/{collaborator_index}")
-def remove_song_credit(song_folder_id: str, collaborator_index: int):
+def remove_song_credit(song_folder_id: str, collaborator_index: int, drive=Depends(get_request_drive)):
     try:
-        result = remove_song_credit_collaborator(song_folder_id, collaborator_index)
+        result = remove_song_credit_collaborator(song_folder_id, collaborator_index, drive=drive)
         return {
             "ok": True,
             "removed": result["removed"],
             "song_credit": result["record"],
             "split_total": result["split_total"],
-            "release_status": calculate_song_release_status(song_folder_id, record=result["record"]),
+            "release_status": calculate_song_release_status(song_folder_id, drive=drive, record=result["record"]),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -750,14 +868,14 @@ def remove_song_credit(song_folder_id: str, collaborator_index: int):
 
 
 @app.post("/song-credits/{song_folder_id}/reset-splits")
-def reset_song_credit_split_total(song_folder_id: str):
+def reset_song_credit_split_total(song_folder_id: str, drive=Depends(get_request_drive)):
     try:
-        result = reset_song_credit_splits(song_folder_id)
+        result = reset_song_credit_splits(song_folder_id, drive=drive)
         return {
             "ok": True,
             "song_credit": result["record"],
             "split_total": result["split_total"],
-            "release_status": calculate_song_release_status(song_folder_id, record=result["record"]),
+            "release_status": calculate_song_release_status(song_folder_id, drive=drive, record=result["record"]),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -766,11 +884,11 @@ def reset_song_credit_split_total(song_folder_id: str):
 
 
 @app.post("/send-links")
-def create_song_send_link(request: SendLinkRequest):
+def create_song_send_link(request: SendLinkRequest, drive=Depends(get_request_drive)):
     try:
         return {
             "ok": True,
-            "send_link": create_send_link(request.artist_name, request.song_name),
+            "send_link": create_send_link(request.artist_name, request.song_name, drive=drive),
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -781,7 +899,7 @@ def create_song_send_link(request: SendLinkRequest):
 @app.get("/signature/{token}", response_class=HTMLResponse)
 def get_signature_page(token: str):
     try:
-        return build_signature_page(token)
+        return build_signature_page(token, drive=get_drive_for_signature_token(token))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
@@ -797,12 +915,14 @@ def submit_signature(
     agreement: str = Form(""),
 ):
     try:
+        drive = get_drive_for_signature_token(token)
         signed_request = save_signature_submission_for_token(
             token,
             signature_name,
             email,
             notes=notes,
             agreement=agreement == "yes",
+            drive=drive,
         )
         signed_url = signed_request.get("signed_document_url", "")
         return """<!doctype html><html><body>
