@@ -25,7 +25,9 @@ SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 24 * 14
 
 
 def require_login():
-    return os.getenv("REQUIRE_LOGIN", "0") == "1"
+    require_login_value = os.getenv("REQUIRE_LOGIN", "").strip().lower()
+    hosted_value = os.getenv("GDAM_HOSTED", "").strip().lower()
+    return require_login_value in {"1", "true", "yes", "on"} or hosted_value in {"1", "true", "yes", "on"}
 
 
 def get_auth_database_url():
