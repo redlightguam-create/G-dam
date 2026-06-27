@@ -59,7 +59,14 @@ from services.drive_service import get_authenticated_drive
 
 
 app = FastAPI(title="Music Distribution Organizer API")
-init_auth_db()
+
+
+@app.on_event("startup")
+def startup():
+    try:
+        init_auth_db()
+    except Exception as error:
+        print("Auth database initialization failed: {}".format(error), flush=True)
 
 DEFAULT_CORS_ORIGINS = "http://127.0.0.1:5173,http://localhost:5173"
 CORS_ORIGINS = [
@@ -114,11 +121,20 @@ def get_request_drive(request: Request):
 @app.get("/auth/status")
 def auth_status(request: Request):
     user = get_current_user(request)
+    auth_database_ready = True
+    auth_database_error = ""
+    try:
+        init_auth_db()
+    except Exception as error:
+        auth_database_ready = False
+        auth_database_error = str(error)
     return {
         "ok": True,
         "require_login": require_login(),
         "authenticated": bool(user),
         "user": public_user(user),
+        "auth_database_ready": auth_database_ready,
+        "auth_database_error": auth_database_error,
     }
 
 
