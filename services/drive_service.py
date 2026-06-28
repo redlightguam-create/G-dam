@@ -76,7 +76,10 @@ def write_env_file_if_present(env_name, destination_path, decoder=None):
 
 
 def decode_base64_env(value):
-    return base64.b64decode(value.encode('utf-8'))
+    cleaned = value.strip()
+    if cleaned.lower().startswith('value:'):
+        cleaned = cleaned.split(':', 1)[1].strip()
+    return base64.b64decode(cleaned.encode('utf-8'))
 
 
 def ensure_hosted_google_auth_files():

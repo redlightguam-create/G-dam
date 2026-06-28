@@ -140,17 +140,20 @@ def auth_status(request: Request):
 
 @app.get("/auth/google/start")
 def start_google_auth(request: Request):
-    state = os.urandom(16).hex()
-    response = RedirectResponse(build_google_login_url(request, state))
-    response.set_cookie(
-        "gdam_oauth_state",
-        state,
-        httponly=True,
-        secure=get_cookie_secure(),
-        samesite=get_cookie_samesite(),
-        max_age=600,
-    )
-    return response
+    try:
+        state = os.urandom(16).hex()
+        response = RedirectResponse(build_google_login_url(request, state))
+        response.set_cookie(
+            "gdam_oauth_state",
+            state,
+            httponly=True,
+            secure=get_cookie_secure(),
+            samesite=get_cookie_samesite(),
+            max_age=600,
+        )
+        return response
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="Google login is not configured correctly: {}".format(error))
 
 
 @app.get("/auth/google/callback")
