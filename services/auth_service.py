@@ -175,7 +175,7 @@ def build_google_login_url(request, state):
     gauth = create_google_auth_for_web(redirect_uri)
     url = gauth.GetAuthUrl()
     separator = "&" if "?" in url else "?"
-    return "{}{}state={}&prompt=consent".format(url, separator, state)
+    return "{}{}state={}".format(url, separator, state)
 
 
 def exchange_google_code(request, code):
