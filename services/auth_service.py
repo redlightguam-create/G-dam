@@ -191,7 +191,8 @@ def get_user_info(credentials):
     http = credentials.authorize(httplib2.Http())
     response, content = http.request("https://www.googleapis.com/oauth2/v2/userinfo")
     if int(response.status) >= 400:
-        raise RuntimeError("Could not fetch Google user profile.")
+        detail = content.decode("utf-8", errors="replace") if content else response.reason
+        raise RuntimeError("Could not fetch Google user profile: {}".format(detail))
     return json.loads(content.decode("utf-8"))
 
 

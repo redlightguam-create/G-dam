@@ -103,6 +103,9 @@ def build_google_auth_settings(client_secrets_path=None, token_path=None):
         'save_credentials_file': token_path or get_token_path(),
         'get_refresh_token': True,
         'oauth_scope': [
+            'openid',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/drive',
             'https://www.googleapis.com/auth/documents',
             'https://www.googleapis.com/auth/gmail.send',
